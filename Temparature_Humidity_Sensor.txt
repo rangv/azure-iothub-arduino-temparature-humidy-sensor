@@ -1,0 +1,161 @@
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <DHT.h>
+
+/* WiFi Settings */
+const char* ssid      = "";
+const char* password  = "";
+
+/* Azure IOT Hub Settings */
+const char* mqtt_server = "hub.azure-devices.net";
+const char* deviceName  = "myDevice";
+const char* deviceSAS   = "SharedAccessSignature sr=hub.azure-devices.net%2fdevices%2fmyDevice&sig=9XCcLjuODgQ230%2bqHuOwXTXmn605PFDJBV28ykEsQ7Q%3d&se=1470687754";
+long interval           = 30000; //(ms) - 10 seconds between reports
+/* Azure IOT Hub Settings */
+
+#define DHTTYPE DHT22 // DHT11 or DHT22 
+#define DHTPIN 2  // 
+#define RED_PIN 13 // 
+#define GREEN_PIN 12 // 
+
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+DHT dht(DHTPIN, DHTTYPE);
+
+long lastMsg = 0;
+int value = 0;
+
+void setup() {  
+  pinMode(RED_PIN, OUTPUT);     // Initialize the RED_PIN pin as an output
+  pinMode(GREEN_PIN, OUTPUT);     // Initialize the RED_PIN pin as an output
+  RED_LEDOff();
+  GREEN_LEDOff();
+  dht.begin();
+  Serial.begin(115200);
+  setup_wifi();
+  client.setServer(mqtt_server, 8883);
+  client.setCallback(callback);
+}
+
+void setup_wifi() {
+  delay(10);
+  // We start by connecting to a WiFi network
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void RED_LEDOn() {  
+  digitalWrite(RED_PIN, HIGH);   // Turn the RED on
+}
+
+void RED_LEDOff() {
+  digitalWrite(RED_PIN, LOW);   // Turn the RED off 
+}
+
+void GREEN_LEDOn() {  
+  digitalWrite(GREEN_PIN, HIGH);   // Turn the GREEN on 
+}
+
+void GREEN_LEDOff() {
+  digitalWrite(GREEN_PIN, LOW);   // Turn the GREEN off 
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  String message;
+  for (int i = 0; i < length; i++) {
+    message+=(char)payload[i];
+  }
+  Serial.println(message);
+   delay(2000);
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    String hubUserString=mqtt_server;
+    hubUserString+="/";
+    hubUserString+=deviceName;
+   
+    if (client.connect(deviceName, hubUserString.c_str(), deviceSAS)) {
+      GREEN_LEDOn();
+      Serial.println("connected");
+      String subscribestring="devices/";
+      subscribestring+=deviceName;
+      subscribestring+="/messages/devicebound/#";
+      
+      client.subscribe(subscribestring.c_str());
+    } else {
+      GREEN_LEDOff();
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void publishTemprature() {
+  delay(2000);
+  RED_LEDOn();
+  float humidity, temperature, heatIndex;
+  
+  humidity    = dht.readHumidity();
+  temperature = dht.readTemperature(true);
+  heatIndex   = dht.computeHeatIndex(temperature, humidity);
+  
+  if (isnan(humidity) || isnan(temperature)) {
+    Serial.println(humidity);
+    Serial.println(temperature);
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+  
+  String json="{ \"heatIndex\": ";
+  json+=heatIndex;
+  json+=", \"temperature\": ";
+  json+=temperature;
+  json+=", \"humidity\": ";
+  json+=humidity;
+  json+=", \"IP\": \"";
+  json+=WiFi.localIP().toString();
+  json+="\" }";
+
+  String publishstring="devices/";
+  publishstring+=deviceName;
+  publishstring+="/messages/events/";
+  
+  client.publish(publishstring.c_str(), json.c_str());
+  RED_LEDOff();
+}
+
+void loop() {
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  long now = millis();
+  if (now - lastMsg > interval) {
+    lastMsg = now;
+    ++value;
+    // Do the real work here
+    publishTemprature();
+  }
+}
+
